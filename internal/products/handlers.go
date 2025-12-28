@@ -1,10 +1,10 @@
 package products
 
 import (
-	"encoding/json"
+	"log"
 	"net/http"
 
-	"github.com/VishalHilal/e-commerce-api/internal/products"
+	"github.com/VishalHilal/e-commerce-api/internal/json"
 )
 
 type handler struct {
@@ -17,10 +17,18 @@ func NewHandler(service Service) *handler {
 
 func (h *handler) ListProducts(w http.ResponseWriter, r *http.Request) {
 
-	products := []string{"Hellow", "World"}
+	err := h.service.ListProducts(r.Context())
 
-	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		log.Println(err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(products)
+
+	products := struct {
+		Products []string `json:"products"`
+	}{}
+
+	json.Write(w, http.StatusOK, products)
 }
