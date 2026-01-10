@@ -10,6 +10,7 @@ import (
 	"github.com/VishalHilal/e-commerce-api/internal/cart"
 	"github.com/VishalHilal/e-commerce-api/internal/orders"
 	"github.com/VishalHilal/e-commerce-api/internal/products"
+	"github.com/VishalHilal/e-commerce-api/internal/reviews"
 	"github.com/VishalHilal/e-commerce-api/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -80,6 +81,20 @@ func (app *application) mount() http.Handler {
 		r.Use(jwtSvc.AuthMiddleware, auth.RequireRole("admin"))
 		r.Get("/admin/orders", orderHandler.GetAllOrders)
 		r.Put("/admin/orders/{id}", orderHandler.UpdateOrderStatus)
+	})
+
+	reviewService := reviews.NewService(repo)
+	reviewHandler := reviews.NewHandler(reviewService)
+	r.Group(func(r chi.Router) {
+		r.Get("/products/{product_id}/reviews", reviewHandler.GetProductReviews)
+		r.Get("/products/{product_id}/reviews-with-avg", reviewHandler.GetProductWithReviews)
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Use(jwtSvc.AuthMiddleware)
+		r.Post("/products/{product_id}/reviews", reviewHandler.CreateReview)
+		r.Put("/reviews/{id}", reviewHandler.UpdateReview)
+		r.Delete("/reviews/{id}", reviewHandler.DeleteReview)
 	})
 
 	return r

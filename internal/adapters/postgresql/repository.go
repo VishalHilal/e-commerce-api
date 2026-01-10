@@ -680,3 +680,157 @@ func (r *Repository) UpdatePaymentStatus(ctx context.Context, paymentID int, sta
 	_, err := r.db.Exec(ctx, query, paymentID, status)
 	return err
 }
+
+func (r *Repository) CreateReview(ctx context.Context, review models.CreateReviewRequest, userID int) (*models.ProductReview, error) {
+	query := `
+		INSERT INTO product_reviews (product_id, user_id, rating, comment)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, product_id, user_id, rating, comment, created_at, updated_at
+	`
+
+	var productReview models.ProductReview
+	err := r.db.QueryRow(ctx, query,
+		review.ProductID,
+		userID,
+		review.Rating,
+		review.Comment,
+	).Scan(
+		&productReview.ID,
+		&productReview.ProductID,
+		&productReview.UserID,
+		&productReview.Rating,
+		&productReview.Comment,
+		&productReview.CreatedAt,
+		&productReview.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &productReview, nil
+}
+
+func (r *Repository) GetProductReviews(ctx context.Context, productID int) ([]models.ProductReview, error) {
+	query := `
+		SELECT pr.id, pr.product_id, pr.user_id, pr.rating, pr.comment, pr.created_at, pr.updated_at,
+		       u.id, u.email, u.first_name, u.last_name
+		FROM product_reviews pr
+		JOIN users u ON pr.user_id = u.id
+		WHERE pr.product_id = $1
+		ORDER BY pr.created_at DESC
+	`
+
+	rows, err := r.db.Query(ctx, query, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var reviews []models.ProductReview
+	for rows.Next() {
+		var review models.ProductReview
+		var user models.User
+		err := rows.Scan(
+			&review.ID,
+			&review.ProductID,
+			&review.UserID,
+			&review.Rating,
+			&review.Comment,
+			&review.CreatedAt,
+			&review.UpdatedAt,
+			&user.ID,
+			&user.Email,
+			&user.FirstName,
+			&user.LastName,
+		)
+		if err != nil {
+			return nil, err
+		}
+		review.User = &user
+		reviews = append(reviews, review)
+	}
+
+	return reviews, nil
+}
+
+func (r *Repository) UpdateReview(ctx context.Context, reviewID, userID int, req models.UpdateReviewRequest) (*models.ProductReview, error) {
+	query := `
+		UPDATE product_reviews
+		SET rating = COALESCE($3, rating),
+		    comment = COALESCE($4, comment),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND user_id = $2
+		RETURNING id, product_id, user_id, rating, comment, created_at, updated_at
+	`
+
+	var review models.ProductReview
+	err := r.db.QueryRow(ctx, query,
+		reviewID,
+		userID,
+		req.Rating,
+		req.Comment,
+	).Scan(
+		&review.ID,
+		&review.ProductID,
+		&review.UserID,
+		&review.Rating,
+		&review.Comment,
+		&review.CreatedAt,
+		&review.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &review, nil
+}
+
+func (r *Repository) DeleteReview(ctx context.Context, reviewID, userID int) error {
+	query := `DELETE FROM product_reviews WHERE id = $1 AND user_id = $2`
+	_, err := r.db.Exec(ctx, query, reviewID, userID)
+	return err
+}
+
+func (r *Repository) GetUserReview(ctx context.Context, productID, userID int) (*models.ProductReview, error) {
+	query := `
+		SELECT id, product_id, user_id, rating, comment, created_at, updated_at
+		FROM product_reviews
+		WHERE product_id = $1 AND user_id = $2
+	`
+
+	var review models.ProductReview
+	err := r.db.QueryRow(ctx, query, productID, userID).Scan(
+		&review.ID,
+		&review.ProductID,
+		&review.UserID,
+		&review.Rating,
+		&review.Comment,
+		&review.CreatedAt,
+		&review.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &review, nil
+}
+
+func (r *Repository) GetProductAverageRating(ctx context.Context, productID int) (float64, int, error) {
+	query := `
+		SELECT COALESCE(AVG(rating), 0) as avg_rating, COUNT(*) as review_count
+		FROM product_reviews
+		WHERE product_id = $1
+	`
+
+	var avgRating float64
+	var reviewCount int
+	err := r.db.QueryRow(ctx, query, productID).Scan(&avgRating, &reviewCount)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return avgRating, reviewCount, nil
+}
