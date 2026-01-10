@@ -303,3 +303,380 @@ func (r *Repository) DeleteProduct(ctx context.Context, id int) error {
 	_, err := r.db.Exec(ctx, query, id)
 	return err
 }
+
+func (r *Repository) AddToCart(ctx context.Context, userID int, req models.AddToCartRequest) (*models.CartItem, error) {
+	query := `
+		INSERT INTO cart_items (user_id, product_id, quantity)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, product_id) 
+		DO UPDATE SET quantity = cart_items.quantity + $3, updated_at = CURRENT_TIMESTAMP
+		RETURNING id, user_id, product_id, quantity, created_at, updated_at
+	`
+
+	var cartItem models.CartItem
+	err := r.db.QueryRow(ctx, query, userID, req.ProductID, req.Quantity).Scan(
+		&cartItem.ID,
+		&cartItem.UserID,
+		&cartItem.ProductID,
+		&cartItem.Quantity,
+		&cartItem.CreatedAt,
+		&cartItem.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	product, err := r.GetProductByID(ctx, req.ProductID)
+	if err == nil {
+		cartItem.Product = product
+	}
+
+	return &cartItem, nil
+}
+
+func (r *Repository) GetCartItems(ctx context.Context, userID int) ([]models.CartItem, error) {
+	query := `
+		SELECT ci.id, ci.user_id, ci.product_id, ci.quantity, ci.created_at, ci.updated_at,
+		       p.id, p.name, p.description, p.price, p.stock_quantity, p.category_id, p.sku, p.image_url, p.is_active, p.created_at, p.updated_at
+		FROM cart_items ci
+		JOIN products p ON ci.product_id = p.id
+		WHERE ci.user_id = $1
+		ORDER BY ci.created_at DESC
+	`
+
+	rows, err := r.db.Query(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cartItems []models.CartItem
+	for rows.Next() {
+		var cartItem models.CartItem
+		var product models.Product
+		err := rows.Scan(
+			&cartItem.ID,
+			&cartItem.UserID,
+			&cartItem.ProductID,
+			&cartItem.Quantity,
+			&cartItem.CreatedAt,
+			&cartItem.UpdatedAt,
+			&product.ID,
+			&product.Name,
+			&product.Description,
+			&product.Price,
+			&product.StockQuantity,
+			&product.CategoryID,
+			&product.SKU,
+			&product.ImageURL,
+			&product.IsActive,
+			&product.CreatedAt,
+			&product.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		cartItem.Product = &product
+		cartItems = append(cartItems, cartItem)
+	}
+
+	return cartItems, nil
+}
+
+func (r *Repository) UpdateCartItem(ctx context.Context, userID, productID int, quantity int) error {
+	query := `
+		UPDATE cart_items
+		SET quantity = $3, updated_at = CURRENT_TIMESTAMP
+		WHERE user_id = $1 AND product_id = $2
+	`
+
+	_, err := r.db.Exec(ctx, query, userID, productID, quantity)
+	return err
+}
+
+func (r *Repository) RemoveFromCart(ctx context.Context, userID, productID int) error {
+	query := `DELETE FROM cart_items WHERE user_id = $1 AND product_id = $2`
+	_, err := r.db.Exec(ctx, query, userID, productID)
+	return err
+}
+
+func (r *Repository) ClearCart(ctx context.Context, userID int) error {
+	query := `DELETE FROM cart_items WHERE user_id = $1`
+	_, err := r.db.Exec(ctx, query, userID)
+	return err
+}
+
+func (r *Repository) CreateOrder(ctx context.Context, req models.CreateOrderRequest, userID int) (*models.Order, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	orderNumber := "ORD-" + uuid.New().String()[:8]
+
+	var totalAmount float64
+	for _, item := range req.Items {
+		product, err := r.GetProductByID(ctx, item.ProductID)
+		if err != nil {
+			return nil, fmt.Errorf("product %d not found: %w", item.ProductID, err)
+		}
+		totalAmount += float64(item.Quantity) * product.Price
+	}
+
+	orderQuery := `
+		INSERT INTO orders (user_id, order_number, status, total_amount, shipping_address, billing_address)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, user_id, order_number, status, total_amount, shipping_address, billing_address, created_at, updated_at
+	`
+
+	var order models.Order
+	err = tx.QueryRow(ctx, orderQuery,
+		userID,
+		orderNumber,
+		"pending",
+		totalAmount,
+		req.ShippingAddress,
+		req.BillingAddress,
+	).Scan(
+		&order.ID,
+		&order.UserID,
+		&order.OrderNumber,
+		&order.Status,
+		&order.TotalAmount,
+		&order.ShippingAddress,
+		&order.BillingAddress,
+		&order.CreatedAt,
+		&order.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	for _, item := range req.Items {
+		product, err := r.GetProductByID(ctx, item.ProductID)
+		if err != nil {
+			return nil, fmt.Errorf("product %d not found: %w", item.ProductID, err)
+		}
+
+		unitPrice := product.Price
+		totalPrice := float64(item.Quantity) * unitPrice
+
+		itemQuery := `
+			INSERT INTO order_items (order_id, product_id, quantity, unit_price, total_price)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id, order_id, product_id, quantity, unit_price, total_price
+		`
+
+		var orderItem models.OrderItem
+		err = tx.QueryRow(ctx, itemQuery,
+			order.ID,
+			item.ProductID,
+			item.Quantity,
+			unitPrice,
+			totalPrice,
+		).Scan(
+			&orderItem.ID,
+			&orderItem.OrderID,
+			&orderItem.ProductID,
+			&orderItem.Quantity,
+			&orderItem.UnitPrice,
+			&orderItem.TotalPrice,
+		)
+
+		if err != nil {
+			return nil, err
+		}
+
+		order.OrderItems = append(order.OrderItems, orderItem)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return &order, nil
+}
+
+func (r *Repository) GetOrdersByUserID(ctx context.Context, userID int) ([]models.Order, error) {
+	query := `
+		SELECT id, user_id, order_number, status, total_amount, shipping_address, billing_address, created_at, updated_at
+		FROM orders
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.Query(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orders []models.Order
+	for rows.Next() {
+		var order models.Order
+		err := rows.Scan(
+			&order.ID,
+			&order.UserID,
+			&order.OrderNumber,
+			&order.Status,
+			&order.TotalAmount,
+			&order.ShippingAddress,
+			&order.BillingAddress,
+			&order.CreatedAt,
+			&order.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+
+	return orders, nil
+}
+
+func (r *Repository) GetOrderByID(ctx context.Context, id int) (*models.Order, error) {
+	query := `
+		SELECT id, user_id, order_number, status, total_amount, shipping_address, billing_address, created_at, updated_at
+		FROM orders
+		WHERE id = $1
+	`
+
+	var order models.Order
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&order.ID,
+		&order.UserID,
+		&order.OrderNumber,
+		&order.Status,
+		&order.TotalAmount,
+		&order.ShippingAddress,
+		&order.BillingAddress,
+		&order.CreatedAt,
+		&order.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	itemsQuery := `
+		SELECT id, order_id, product_id, quantity, unit_price, total_price
+		FROM order_items
+		WHERE order_id = $1
+	`
+
+	itemRows, err := r.db.Query(ctx, itemsQuery, id)
+	if err != nil {
+		return nil, err
+	}
+	defer itemRows.Close()
+
+	for itemRows.Next() {
+		var item models.OrderItem
+		err := itemRows.Scan(
+			&item.ID,
+			&item.OrderID,
+			&item.ProductID,
+			&item.Quantity,
+			&item.UnitPrice,
+			&item.TotalPrice,
+		)
+		if err != nil {
+			return nil, err
+		}
+		order.OrderItems = append(order.OrderItems, item)
+	}
+
+	return &order, nil
+}
+
+func (r *Repository) UpdateOrderStatus(ctx context.Context, id int, status string) error {
+	query := `
+		UPDATE orders
+		SET status = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`
+
+	_, err := r.db.Exec(ctx, query, id, status)
+	return err
+}
+
+func (r *Repository) GetAllOrders(ctx context.Context) ([]models.Order, error) {
+	query := `
+		SELECT id, user_id, order_number, status, total_amount, shipping_address, billing_address, created_at, updated_at
+		FROM orders
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orders []models.Order
+	for rows.Next() {
+		var order models.Order
+		err := rows.Scan(
+			&order.ID,
+			&order.UserID,
+			&order.OrderNumber,
+			&order.Status,
+			&order.TotalAmount,
+			&order.ShippingAddress,
+			&order.BillingAddress,
+			&order.CreatedAt,
+			&order.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+
+	return orders, nil
+}
+
+func (r *Repository) CreatePayment(ctx context.Context, payment models.CreatePaymentRequest) (*models.Payment, error) {
+	query := `
+		INSERT INTO payments (order_id, payment_method, payment_status, amount)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, order_id, payment_method, payment_status, amount, transaction_id, created_at, updated_at
+	`
+
+	var paymentRecord models.Payment
+	err := r.db.QueryRow(ctx, query,
+		payment.OrderID,
+		payment.PaymentMethod,
+		"pending",
+		0, // Will be updated with actual amount
+	).Scan(
+		&paymentRecord.ID,
+		&paymentRecord.OrderID,
+		&paymentRecord.PaymentMethod,
+		&paymentRecord.PaymentStatus,
+		&paymentRecord.Amount,
+		&paymentRecord.TransactionID,
+		&paymentRecord.CreatedAt,
+		&paymentRecord.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &paymentRecord, nil
+}
+
+func (r *Repository) UpdatePaymentStatus(ctx context.Context, paymentID int, status string) error {
+	query := `
+		UPDATE payments
+		SET payment_status = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`
+
+	_, err := r.db.Exec(ctx, query, paymentID, status)
+	return err
+}
