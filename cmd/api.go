@@ -5,19 +5,20 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/VishalHilal/e-commerce-api/internal/adapters/postgresql"
+	"github.com/VishalHilal/e-commerce-api/internal/auth"
+	"github.com/VishalHilal/e-commerce-api/internal/products"
+	"github.com/VishalHilal/e-commerce-api/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
-	repo "github.com/VishalHilal/e-commerce-api/internal/adapters/postgresql/sqlc"
-	"github.com/VishalHilal/e-commerce-api/internal/orders"
-	"github.com/VishalHilal/e-commerce-api/internal/products"
 )
 
 func (app *application) mount() http.Handler {
 	r := chi.NewRouter()
 
-	r.Use(middleware.RequestID) 
-	r.Use(middleware.RealIP)    
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
@@ -27,13 +28,30 @@ func (app *application) mount() http.Handler {
 		w.Write([]byte("all good"))
 	})
 
-	productService := products.NewService(repo.New(app.db))
+	repo := postgresql.New(app.db)
+	jwtSvc := auth.NewJWTService("your-secret-key-change-in-production")
+
+	userService := users.NewService(repo, jwtSvc)
+	userHandler := users.NewHandler(userService)
+	r.Post("/auth/register", userHandler.Register)
+	r.Post("/auth/login", userHandler.Login)
+	r.Group(func(r chi.Router) {
+		r.Use(jwtSvc.AuthMiddleware)
+		r.Get("/auth/profile", userHandler.GetProfile)
+		r.Put("/auth/profile", userHandler.UpdateProfile)
+	})
+
+	productService := products.NewService(repo)
 	productHandler := products.NewHandler(productService)
 	r.Get("/products", productHandler.ListProducts)
+	r.Get("/products/{id}", productHandler.GetProduct)
 
-	orderService := orders.NewService(repo.New(app.db), app.db)
-	ordersHandler := orders.NewHandler(orderService)
-	r.Post("/orders", ordersHandler.PlaceOrder)
+	r.Group(func(r chi.Router) {
+		r.Use(jwtSvc.AuthMiddleware, auth.RequireRole("admin"))
+		r.Post("/products", productHandler.CreateProduct)
+		r.Put("/products/{id}", productHandler.UpdateProduct)
+		r.Delete("/products/{id}", productHandler.DeleteProduct)
+	})
 
 	return r
 }
