@@ -7,6 +7,8 @@ import (
 
 	"github.com/VishalHilal/e-commerce-api/internal/adapters/postgresql"
 	"github.com/VishalHilal/e-commerce-api/internal/auth"
+	"github.com/VishalHilal/e-commerce-api/internal/cart"
+	"github.com/VishalHilal/e-commerce-api/internal/orders"
 	"github.com/VishalHilal/e-commerce-api/internal/products"
 	"github.com/VishalHilal/e-commerce-api/internal/users"
 	"github.com/go-chi/chi/v5"
@@ -51,6 +53,33 @@ func (app *application) mount() http.Handler {
 		r.Post("/products", productHandler.CreateProduct)
 		r.Put("/products/{id}", productHandler.UpdateProduct)
 		r.Delete("/products/{id}", productHandler.DeleteProduct)
+	})
+
+	cartService := cart.NewService(repo)
+	cartHandler := cart.NewHandler(cartService)
+	r.Group(func(r chi.Router) {
+		r.Use(jwtSvc.AuthMiddleware)
+		r.Get("/cart", cartHandler.GetCart)
+		r.Post("/cart", cartHandler.AddToCart)
+		r.Put("/cart/{product_id}", cartHandler.UpdateCartItem)
+		r.Delete("/cart/{product_id}", cartHandler.RemoveFromCart)
+		r.Delete("/cart", cartHandler.ClearCart)
+	})
+
+	orderService := orders.NewService(repo)
+	orderHandler := orders.NewHandler(orderService)
+	r.Group(func(r chi.Router) {
+		r.Use(jwtSvc.AuthMiddleware)
+		r.Post("/orders", orderHandler.CreateOrder)
+		r.Get("/orders", orderHandler.GetUserOrders)
+		r.Get("/orders/{id}", orderHandler.GetOrder)
+		r.Post("/payments", orderHandler.ProcessPayment)
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Use(jwtSvc.AuthMiddleware, auth.RequireRole("admin"))
+		r.Get("/admin/orders", orderHandler.GetAllOrders)
+		r.Put("/admin/orders/{id}", orderHandler.UpdateOrderStatus)
 	})
 
 	return r
